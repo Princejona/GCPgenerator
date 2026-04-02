@@ -7,6 +7,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async  # BAGONG IMPORT PARA SA STEALTH
 
 # Environment Variables
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -31,21 +32,39 @@ async def deploy_to_cloud_run(magic_link: str, update: Update, status_msg) -> st
         try: await status_msg.edit_text(text)
         except: pass 
 
-    await update_log(f"🔄 1/6: Project: {project_id}\nBinubuksan ang browser...")
+    await update_log(f"🔄 1/6: Project: {project_id}\nNaghahanda ng STEALTH browser...")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-        context = await browser.new_context(viewport={'width': 1280, 'height': 720})
+        # Nagdagdag tayo ng --disable-blink-features=AutomationControlled para hindi ma-detect na bot
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-gpu',
+                '--mute-audio'
+            ]
+        )
+        
+        # Gumagamit tayo ng pekeng User-Agent para magmukhang totoong Windows PC
+        context = await browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='en-US'
+        )
         page = await context.new_page()
 
+        # I-APPLY ANG STEALTH MODE SA BROWSER TAB
+        await stealth_async(page)
+
         try:
-            await update_log("🌐 2/6: Loading Google Cloud SSO...")
+            await update_log("🌐 2/6: Loading Google Cloud SSO (Stealth Mode)...")
             await page.goto(magic_link, timeout=90000)
             
-            # MAG-HINTAY NG 10 SECONDS PARA MASIGURONG NAKA-LOAD ANG SCREEN
             await asyncio.sleep(10)
 
-            # BYPASS "WELCOME" O "I UNDERSTAND" SCREENS
+            # BYPASS SCREENS
             selectors_to_click = [
                 'text="I understand"', 
                 'text="Done"', 
@@ -63,17 +82,15 @@ async def deploy_to_cloud_run(magic_link: str, update: Update, status_msg) -> st
 
             await update_log("✅ 3/6: Hinahanap ang Console Action Bar...")
             
-            # DITO SIYA NAG-E-ERROR. HINTAYIN NATIN NG MAS MATAGAL.
             try:
                 await page.wait_for_selector('cfc-action-bar', timeout=60000)
             except Exception as e:
-                # KUKUHA NG SCREENSHOT KAPAG NAG-TIMEOUT
+                # KUKUHA NG SCREENSHOT KAPAG NAG-TIMEOUT ULIT
                 await page.screenshot(path="error_screen.png")
                 await update.message.reply_photo(photo=open("error_screen.png", 'rb'), 
-                                               caption="❌ Timeout Error! Ito ang nakikita ng bot kaya hindi siya makatuloy. Pakitingnan kung may kailangang i-click.")
-                return f"❌ Timeout error sa paghahanap ng Console. Check screenshot."
+                                               caption="❌ Na-block pa rin tayo! Ito ang nakikita ng bot ngayon.")
+                return f"❌ Timeout error. Check screenshot."
 
-            # TULOY SA CLOUD SHELL
             await update_log("💻 4/6: Kiniklik ang Cloud Shell...")
             await page.click('[aria-label="Activate Cloud Shell"]')
             
@@ -85,7 +102,6 @@ async def deploy_to_cloud_run(magic_link: str, update: Update, status_msg) -> st
             cmd = f"git clone {GIT_REPO_URL} setup-folder && cd setup-folder && gcloud run deploy vless-server --source . --port=8080 --allow-unauthenticated --region=us-central1 --project={project_id} --quiet\n"
             await frame.type('.xterm-helper-textarea', cmd)
 
-            # PAG-WAIT SA URL
             await update_log("⚙️ 6/6: Binabantayan ang build (Wait 2-4 mins)...")
             for i in range(20):
                 await asyncio.sleep(15)
@@ -108,7 +124,7 @@ async def deploy_to_cloud_run(magic_link: str, update: Update, status_msg) -> st
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "skills.google/google_sso" in update.message.text:
-        status_msg = await update.message.reply_text("⏳ Na-detect ang link! Binubuksan na ang invisible browser...")
+        status_msg = await update.message.reply_text("⏳ Na-detect ang link! Binubuksan na ang STEALTH browser...")
         result = await deploy_to_cloud_run(update.message.text, update, status_msg)
         await status_msg.edit_text(result, parse_mode=ParseMode.MARKDOWN)
 
