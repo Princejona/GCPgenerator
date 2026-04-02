@@ -32,17 +32,24 @@ async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
     if not GIT_REPO_URL:
         return "❌ Error: Hindi nahanap ang GIT_REPO_URL sa environment variables ng Render."
 
+    # KUNIN ANG PROJECT ID MULA SA LINK MISMO (Bago pa buksan ang browser)
+    # Hinahanap natin ang pattern na "qwiklabs-gcp-..."
+    project_id_match = re.search(r'(qwiklabs-gcp-[a-zA-Z0-9\-]+)', magic_link)
+    if not project_id_match:
+        return "❌ Error: Wala akong makitang 'qwiklabs-gcp-...' na Project ID sa link na sinend mo."
+    
+    project_id = project_id_match.group(1)
+
     # Function para madaling i-update ang chat text sa Telegram
     async def update_log(text):
         try:
             await status_msg.edit_text(text)
         except Exception:
-            pass # Ignore kung pareho lang ang text at nag-error si Telegram
+            pass 
 
-    await update_log("🔄 1/6: Binubuksan ang Lite headless browser...")
+    await update_log(f"🔄 1/6: Project ID ({project_id}) nakuha! Binubuksan ang browser...")
 
     async with async_playwright() as p:
-        # Paggamit ng Lite Browser params para hindi mag-crash ang Render (512MB RAM lang)
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -61,20 +68,16 @@ async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
             await update_log("🌐 2/6: Pumapasok sa Google Cloud gamit ang Magic Link...")
             await page.goto(magic_link, wait_until="networkidle", timeout=60000)
             
-            current_url = page.url
-            project_id_match = re.search(r'project=([^&]+)', current_url)
-            project_id = project_id_match.group(1) if project_id_match else "UNKNOWN_PROJECT"
-
-            if project_id == "UNKNOWN_PROJECT":
-                return "❌ Error: Hindi makuha ang Project ID. Baka expired na ang link."
-
-            await update_log(f"✅ 3/6: Nakapasok na! Project ID: {project_id}. Hinahanap ang Cloud Shell...")
+            await update_log("✅ 3/6: Nakapasok na! Hinahanap ang Cloud Shell...")
             await page.wait_for_selector('cfc-action-bar', timeout=60000)
+            
+            # Pindutin ang Cloud Shell button
             await page.click('[aria-label="Activate Cloud Shell"]')
             
             await update_log("💻 4/6: Naglo-load ang Cloud Shell terminal...")
             cloud_shell_frame_element = await page.wait_for_selector('iframe.cloud-shell-iframe', timeout=90000)
             frame = await cloud_shell_frame_element.content_frame()
+            
             await frame.wait_for_selector('.xterm-cursor', timeout=90000)
 
             await update_log("🚀 5/6: Papatakbuhin na ang Git Clone at Deploy command...")
@@ -83,14 +86,11 @@ async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
 
             await update_log("⚙️ 6/6: Nagbi-build ang Dockerfile sa Cloud Run!\n\nAabutin ito ng 2 hanggang 4 na minuto. Wag aalis, binabantayan ko ang terminal output...")
 
-            # Bantayan ang terminal output bawat 15 seconds para makuha ang URL
             service_url = None
-            for i in range(20): # Max 5 mins waiting time
+            for i in range(20): 
                 await asyncio.sleep(15)
-                # Basahin ang text sa loob ng terminal
                 terminal_text = await frame.locator('.xterm-rows').inner_text()
                 
-                # Hanapin ang https:// link ng vless-server
                 match = re.search(r'(https://vless-server-[a-zA-Z0-9\-]+\.a\.run\.app)', terminal_text)
                 if match:
                     service_url = match.group(1)
@@ -99,10 +99,7 @@ async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
                     await update_log(f"⚙️ 6/6: Nagbi-build pa rin... (Checking {i+1}/20)")
 
             if service_url:
-                # Tanggalin ang https:// para sa VLESS host
                 host_domain = service_url.replace("https://", "")
-                
-                # Buuin ang config string (May placeholder para sa UUID)
                 vless_config = f"vless://PALITAN_NG_UUID_MO@{host_domain}:443?encryption=none&security=tls&sni={host_domain}&type=ws&path=/PALITAN_NG_PATH_MO#Qwiklabs-VLESS"
                 
                 final_message = (
@@ -116,7 +113,7 @@ async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
                 return "⚠️ Tapos na ang oras ng paghihintay pero hindi ko mahanap ang URL. Baka natagalan ang build. I-check ang Google Cloud Console manually."
 
         except Exception as e:
-            return f"❌ May error na nangyari sa automation: {str(e)}"
+            return f"❌ May error na nangyari sa automation:\n\n{str(e)}"
         finally:
             await browser.close()
 
@@ -127,13 +124,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     
     if "skills.google/google_sso" in user_text:
-        # Unang message na i-e-edit natin maya-maya
         status_msg = await update.message.reply_text("⏳ Na-detect ang magic link! Sinisimulan na ang proseso...")
         
-        # Patakbuhin ang browser at ipasa ang status_msg object para ma-update
         final_result = await deploy_to_cloud_run(user_text, status_msg)
         
-        # Kapag tapos na ang lahat, palitan ang chat ng pinal na sagot (with Markdown format)
         await status_msg.edit_text(final_result, parse_mode=ParseMode.MARKDOWN)
 
 if __name__ == '__main__':
