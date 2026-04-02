@@ -13,7 +13,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GIT_REPO_URL = os.environ.get('GIT_REPO_URL')
 
 # ==========================================
-# 1. SETUP NG FLASK WEB SERVER (PARA SA RENDER)
+# 1. SETUP NG FLASK WEB SERVER
 # ==========================================
 app = Flask(__name__)
 
@@ -26,21 +26,18 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # ==========================================
-# 2. PLAYWRIGHT AUTOMATION LOGIC (MAY LIVE LOGS)
+# 2. PLAYWRIGHT AUTOMATION LOGIC
 # ==========================================
 async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
     if not GIT_REPO_URL:
-        return "❌ Error: Hindi nahanap ang GIT_REPO_URL sa environment variables ng Render."
+        return "❌ Error: Hindi nahanap ang GIT_REPO_URL sa environment variables."
 
-    # KUNIN ANG PROJECT ID MULA SA LINK MISMO (Bago pa buksan ang browser)
-    # Hinahanap natin ang pattern na "qwiklabs-gcp-..."
     project_id_match = re.search(r'(qwiklabs-gcp-[a-zA-Z0-9\-]+)', magic_link)
     if not project_id_match:
-        return "❌ Error: Wala akong makitang 'qwiklabs-gcp-...' na Project ID sa link na sinend mo."
+        return "❌ Error: Wala akong makitang Project ID sa link na sinend mo."
     
     project_id = project_id_match.group(1)
 
-    # Function para madaling i-update ang chat text sa Telegram
     async def update_log(text):
         try:
             await status_msg.edit_text(text)
@@ -65,22 +62,46 @@ async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
         page = await context.new_page()
 
         try:
-            await update_log("🌐 2/6: Pumapasok sa Google Cloud gamit ang Magic Link...")
-            await page.goto(magic_link, wait_until="networkidle", timeout=60000)
+            await update_log("🌐 2/6: Pumapasok sa Google Cloud SSO...")
             
-            await update_log("✅ 3/6: Nakapasok na! Hinahanap ang Cloud Shell...")
-            await page.wait_for_selector('cfc-action-bar', timeout=60000)
+            # Tinanggal ang networkidle para hindi ma-stuck sa loading
+            await page.goto(magic_link, timeout=60000)
             
-            # Pindutin ang Cloud Shell button
+            # Subukang i-bypass ang "Welcome to your new account" screen
+            try:
+                await update_log("🔍 Checking kung may 'I understand' Welcome screen...")
+                understand_btn = page.locator('text="I understand"')
+                if await understand_btn.is_visible(timeout=10000):
+                    await understand_btn.click()
+                    await update_log("✅ Pinindot ang 'I understand' button...")
+            except Exception:
+                pass # Kung walang lumabas, tuloy lang
+            
+            await update_log("✅ 3/6: Hinahanap ang Google Cloud Console...")
+            
+            # Nagdagdag ng extra time para mag-load ang GCP Console
+            await page.wait_for_selector('cfc-action-bar', timeout=90000)
+            
+            # Subukang i-bypass ang GCP Terms of Service popup kung meron man
+            try:
+                agree_checkbox = page.locator('mat-checkbox[formcontrolname="tosAgree"]')
+                if await agree_checkbox.is_visible(timeout=5000):
+                    await agree_checkbox.click()
+                    await page.click('button:has-text("AGREE AND CONTINUE")')
+            except Exception:
+                pass
+
+            # Pindutin ang Activate Cloud Shell
+            await update_log("💻 4/6: Kiniklik ang Cloud Shell icon...")
             await page.click('[aria-label="Activate Cloud Shell"]')
             
-            await update_log("💻 4/6: Naglo-load ang Cloud Shell terminal...")
             cloud_shell_frame_element = await page.wait_for_selector('iframe.cloud-shell-iframe', timeout=90000)
             frame = await cloud_shell_frame_element.content_frame()
             
+            await update_log("⏳ Hinihintay maging ready ang terminal...")
             await frame.wait_for_selector('.xterm-cursor', timeout=90000)
 
-            await update_log("🚀 5/6: Papatakbuhin na ang Git Clone at Deploy command...")
+            await update_log("🚀 5/6: Papatakbuhin na ang command sa terminal...")
             deploy_cmd = f"git clone {GIT_REPO_URL} setup-folder && cd setup-folder && gcloud run deploy vless-server --source . --port=8080 --allow-unauthenticated --region=us-central1 --project={project_id} --quiet\n"
             await frame.type('.xterm-helper-textarea', deploy_cmd)
 
@@ -105,12 +126,12 @@ async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
                 final_message = (
                     f"🎉 **SUCCESSFUL DEPLOYMENT!**\n\n"
                     f"🌐 **Cloud Run URL:**\n{service_url}\n\n"
-                    f"📝 **VLESS Config Nito:**\n`{vless_config}`\n\n"
-                    f"*(Paalala: Kopyahin ang config sa itaas. Palitan ang 'PALITAN_NG_UUID_MO' at 'PALITAN_NG_PATH_MO' kung ano ang nasa loob ng config.json mo bago i-paste sa v2rayNG.)*"
+                    f"📝 **VLESS Config:**\n`{vless_config}`\n\n"
+                    f"*(Kopyahin at palitan ang UUID at PATH base sa config.json mo)*"
                 )
                 return final_message
             else:
-                return "⚠️ Tapos na ang oras ng paghihintay pero hindi ko mahanap ang URL. Baka natagalan ang build. I-check ang Google Cloud Console manually."
+                return "⚠️ Tapos na ang oras ng paghihintay pero hindi ko mahanap ang URL. I-check sa Google Cloud Console manually."
 
         except Exception as e:
             return f"❌ May error na nangyari sa automation:\n\n{str(e)}"
@@ -125,9 +146,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if "skills.google/google_sso" in user_text:
         status_msg = await update.message.reply_text("⏳ Na-detect ang magic link! Sinisimulan na ang proseso...")
-        
         final_result = await deploy_to_cloud_run(user_text, status_msg)
-        
         await status_msg.edit_text(final_result, parse_mode=ParseMode.MARKDOWN)
 
 if __name__ == '__main__':
