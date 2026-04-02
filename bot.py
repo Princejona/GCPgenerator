@@ -4,10 +4,11 @@ import threading
 import re
 from flask import Flask
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from playwright.async_api import async_playwright
 
-# Kukunin ang mga sikreto mula sa Environment Variables ng Render
+# Environment Variables
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GIT_REPO_URL = os.environ.get('GIT_REPO_URL')
 
@@ -21,61 +22,98 @@ def alive():
     return "Bot is awake and running!"
 
 def run_web_server():
-    # Gagamitin ng Render ang sarili nitong PORT, default ay 10000 kung wala
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
 # ==========================================
-# 2. PLAYWRIGHT AUTOMATION SCRIPT
+# 2. PLAYWRIGHT AUTOMATION LOGIC (MAY LIVE LOGS)
 # ==========================================
-async def deploy_to_cloud_run(magic_link: str) -> str:
-    """Ang invisible browser na mag-o-open ng link at mag-ta-type sa Cloud Shell."""
+async def deploy_to_cloud_run(magic_link: str, status_msg) -> str:
     if not GIT_REPO_URL:
-        return "Error: Hindi nahanap ang GIT_REPO_URL sa environment variables."
+        return "❌ Error: Hindi nahanap ang GIT_REPO_URL sa environment variables ng Render."
+
+    # Function para madaling i-update ang chat text sa Telegram
+    async def update_log(text):
+        try:
+            await status_msg.edit_text(text)
+        except Exception:
+            pass # Ignore kung pareho lang ang text at nag-error si Telegram
+
+    await update_log("🔄 1/6: Binubuksan ang Lite headless browser...")
 
     async with async_playwright() as p:
-        # headless=True dahil tatakbo ito sa background ng Render
-        browser = await p.chromium.launch(headless=True)
+        # Paggamit ng Lite Browser params para hindi mag-crash ang Render (512MB RAM lang)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--disable-software-rasterizer',
+                '--mute-audio'
+            ]
+        )
         context = await browser.new_context()
         page = await context.new_page()
 
         try:
-            # 1. Buksan ang Qwiklabs/Skills Boost magic link
-            await page.goto(magic_link, wait_until="networkidle")
+            await update_log("🌐 2/6: Pumapasok sa Google Cloud gamit ang Magic Link...")
+            await page.goto(magic_link, wait_until="networkidle", timeout=60000)
             
-            # 2. Kunin ang Project ID mula sa URL
             current_url = page.url
             project_id_match = re.search(r'project=([^&]+)', current_url)
             project_id = project_id_match.group(1) if project_id_match else "UNKNOWN_PROJECT"
 
             if project_id == "UNKNOWN_PROJECT":
-                return "Error: Hindi makuha ang Project ID mula sa link."
+                return "❌ Error: Hindi makuha ang Project ID. Baka expired na ang link."
 
-            # 3. Hintayin mag-load ang Google Cloud Console (Top bar)
+            await update_log(f"✅ 3/6: Nakapasok na! Project ID: {project_id}. Hinahanap ang Cloud Shell...")
             await page.wait_for_selector('cfc-action-bar', timeout=60000)
-
-            # 4. I-click ang Cloud Shell icon (Ang aria-label ay madalas 'Activate Cloud Shell')
             await page.click('[aria-label="Activate Cloud Shell"]')
             
-            # 5. Hintayin ang Cloud Shell iframe na lumabas
-            cloud_shell_frame_element = await page.wait_for_selector('iframe.cloud-shell-iframe', timeout=60000)
+            await update_log("💻 4/6: Naglo-load ang Cloud Shell terminal...")
+            cloud_shell_frame_element = await page.wait_for_selector('iframe.cloud-shell-iframe', timeout=90000)
             frame = await cloud_shell_frame_element.content_frame()
-            
-            # 6. Hintayin ang cursor terminal na maging ready
-            await frame.wait_for_selector('.xterm-cursor', timeout=60000)
+            await frame.wait_for_selector('.xterm-cursor', timeout=90000)
 
-            # 7. I-type ang command: Git clone muna, tapos deploy gamit ang source code
-            # Note: Gagamit tayo ng random folder name (setup-folder) para sure na walang conflict
+            await update_log("🚀 5/6: Papatakbuhin na ang Git Clone at Deploy command...")
             deploy_cmd = f"git clone {GIT_REPO_URL} setup-folder && cd setup-folder && gcloud run deploy vless-server --source . --port=8080 --allow-unauthenticated --region=us-central1 --project={project_id} --quiet\n"
-            
-            # I-paste at i-enter ang command sa terminal
             await frame.type('.xterm-helper-textarea', deploy_cmd)
 
-            # 8. Magbigay ng sapat na oras (60 seconds) para mag-trigger ang Cloud Build
-            # Bago natin patayin ang browser para hindi maputol ang process
-            await page.wait_for_timeout(60000) 
+            await update_log("⚙️ 6/6: Nagbi-build ang Dockerfile sa Cloud Run!\n\nAabutin ito ng 2 hanggang 4 na minuto. Wag aalis, binabantayan ko ang terminal output...")
 
-            return f"✅ Na-send na ang deploy command para sa Project: {project_id}.\n\nDahil magbi-build pa siya mula sa Dockerfile mo, maghintay ng mga 2-3 minuto. Pumunta sa Cloud Run Console para kunin ang link ng vless-server kung successful."
+            # Bantayan ang terminal output bawat 15 seconds para makuha ang URL
+            service_url = None
+            for i in range(20): # Max 5 mins waiting time
+                await asyncio.sleep(15)
+                # Basahin ang text sa loob ng terminal
+                terminal_text = await frame.locator('.xterm-rows').inner_text()
+                
+                # Hanapin ang https:// link ng vless-server
+                match = re.search(r'(https://vless-server-[a-zA-Z0-9\-]+\.a\.run\.app)', terminal_text)
+                if match:
+                    service_url = match.group(1)
+                    break
+                else:
+                    await update_log(f"⚙️ 6/6: Nagbi-build pa rin... (Checking {i+1}/20)")
+
+            if service_url:
+                # Tanggalin ang https:// para sa VLESS host
+                host_domain = service_url.replace("https://", "")
+                
+                # Buuin ang config string (May placeholder para sa UUID)
+                vless_config = f"vless://PALITAN_NG_UUID_MO@{host_domain}:443?encryption=none&security=tls&sni={host_domain}&type=ws&path=/PALITAN_NG_PATH_MO#Qwiklabs-VLESS"
+                
+                final_message = (
+                    f"🎉 **SUCCESSFUL DEPLOYMENT!**\n\n"
+                    f"🌐 **Cloud Run URL:**\n{service_url}\n\n"
+                    f"📝 **VLESS Config Nito:**\n`{vless_config}`\n\n"
+                    f"*(Paalala: Kopyahin ang config sa itaas. Palitan ang 'PALITAN_NG_UUID_MO' at 'PALITAN_NG_PATH_MO' kung ano ang nasa loob ng config.json mo bago i-paste sa v2rayNG.)*"
+                )
+                return final_message
+            else:
+                return "⚠️ Tapos na ang oras ng paghihintay pero hindi ko mahanap ang URL. Baka natagalan ang build. I-check ang Google Cloud Console manually."
 
         except Exception as e:
             return f"❌ May error na nangyari sa automation: {str(e)}"
@@ -83,28 +121,26 @@ async def deploy_to_cloud_run(magic_link: str) -> str:
             await browser.close()
 
 # ==========================================
-# 3. TELEGRAM BOT LOGIC
+# 3. TELEGRAM BOT HANDLER
 # ==========================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     
-    # Kapag na-detect na SSO link ang sinend mo
     if "skills.google/google_sso" in user_text:
-        await update.message.reply_text("⏳ Na-detect ang magic link! Binubuksan na ang headless browser para mag-deploy sa Cloud Run. Maghintay nang bahagya...")
+        # Unang message na i-e-edit natin maya-maya
+        status_msg = await update.message.reply_text("⏳ Na-detect ang magic link! Sinisimulan na ang proseso...")
         
-        # Patakbuhin ang browser at hintayin ang resulta
-        result = await deploy_to_cloud_run(user_text)
+        # Patakbuhin ang browser at ipasa ang status_msg object para ma-update
+        final_result = await deploy_to_cloud_run(user_text, status_msg)
         
-        # I-send ang result pabalik sa'yo
-        await update.message.reply_text(result)
+        # Kapag tapos na ang lahat, palitan ang chat ng pinal na sagot (with Markdown format)
+        await status_msg.edit_text(final_result, parse_mode=ParseMode.MARKDOWN)
 
 if __name__ == '__main__':
-    # 1. Patakbuhin ang Flask web server sa background thread para hindi patayin ni Render
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # 2. Patakbuhin ang Telegram Bot
     if not BOT_TOKEN:
-        print("CRITICAL ERROR: Walang BOT_TOKEN na nakalagay. Paki-check ang Render Environment Variables.")
+        print("CRITICAL ERROR: Walang BOT_TOKEN na nakalagay.")
     else:
         app = ApplicationBuilder().token(BOT_TOKEN).build()
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
