@@ -2,3 +2,4 @@ python-telegram-bot
 playwright
 flask
 gunicorn
+playwright-stealth
