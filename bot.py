@@ -24,15 +24,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Error: Kulang ng BOT_TOKEN o GIT_REPO_URL sa Render environment variables.")
         return
 
-    # Ito ang command na i-pe-paste mo sa Cloud Shell. 
-    # Uutusan nito ang Cloud Shell na mag-deploy, kunin ang URL, at i-chat sa'yo ang VLESS link!
+    # TINANGGAL NA NATIN ANG EXCLAMATION POINT SA "SUCCESS DEPLOYMENT"
     bash_command = (
         f"git clone {GIT_REPO_URL} setup-vless && cd setup-vless && "
         f"gcloud run deploy vless-server --source . --port=8080 --allow-unauthenticated --region=us-central1 --quiet && "
         f"URL=$(gcloud run services describe vless-server --region=us-central1 --format='value(status.url)') && "
         f"HOST=$(echo $URL | sed 's/https:\\/\\///') && "
         f"curl -s -X POST https://api.telegram.org/bot{BOT_TOKEN}/sendMessage -d chat_id={chat_id} "
-        f"-d text=\"🎉 SUCCESS DEPLOYMENT!%0A%0A🌐 URL:%0A$URL%0A%0A📝 VLESS CONFIG:%0Avless://PALITAN_NG_UUID_MO@$HOST:443?encryption=none&security=tls&sni=$HOST&type=ws&path=/PALITAN_NG_PATH_MO#Qwiklabs-VLESS\""
+        f"-d text=\"🎉 SUCCESS DEPLOYMENT %0A%0A🌐 URL:%0A$URL%0A%0A📝 VLESS CONFIG:%0Avless://PALITAN_NG_UUID_MO@$HOST:443?encryption=none&security=tls&sni=$HOST&type=ws&path=/PALITAN_NG_PATH_MO#Qwiklabs-VLESS\""
     )
 
     reply_msg = (
