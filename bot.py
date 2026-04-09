@@ -31,7 +31,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"URL=$(gcloud run services describe vless-server --region=us-central1 --format='value(status.url)') && "
         f"HOST=$(echo $URL | sed 's/https:\\/\\///') && "
         f"curl -s -X POST https://api.telegram.org/bot{BOT_TOKEN}/sendMessage -d chat_id={chat_id} "
-        f"-d text=\"🎉 SUCCESS DEPLOYMENT %0A%0A🌐 URL:%0A$URL%0A%0A📝 VLESS CONFIG:%0Avless://PALITAN_NG_UUID_MO@$HOST:443?encryption=none&security=tls&sni=$HOST&type=ws&path=/PALITAN_NG_PATH_MO#Qwiklabs-VLESS\""
+        f"-d text=\"🎉 SUCCESS DEPLOYMENT %0A%0A🌐 URL:%0A$URL%0A%0A📝 VLESS CONFIG:%0Avless://prince@google.com:443?path=%2FPrinceHub&security=tls&encryption=none&insecure=1&host=$HOST&type=ws&allowInsecure=1&sni=www.maya.ph#Prince%20config\""
     )
 
     reply_msg = (
